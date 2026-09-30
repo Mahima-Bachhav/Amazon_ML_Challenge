@@ -13,10 +13,10 @@ multi-layer blocking, a LightGBM matcher and a fine-tuned multilingual cross-enc
 
 | Member | Main contributions |
 |---|---|
-| _Name 1_ | test-side pipeline, inference, submissions |
-| _Name 2_ | train-side pipeline, matcher training |
-| _Name 3_ | blocking (test), cross-encoder |
-| _Name 4_ | blocking (train), analyses, cross-encoder |
+| Jyotiprakash | test-side pipeline, inference, submissions |
+| Siddarth | train-side pipeline, matcher training |
+| Vedaansh | blocking (test), cross-encoder |
+| Mahima | blocking (train), analyses, cross-encoder |
 
 ---
 
