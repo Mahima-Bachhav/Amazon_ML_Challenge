@@ -1,0 +1,15 @@
+numpy==2.0.2
+pandas==2.3.3
+scipy==1.16.3
+scikit-learn==1.6.1
+lightgbm==4.6.0
+# rapidfuzz: installed at runtime by the scripts (pip)
+pyarrow==24.0.0
+torch==2.10.0+cu128
+transformers==5.0.0
+sentence-transformers==5.4.1
+huggingface-hub==1.11.0
+# indic-transliteration: installed at runtime by the scripts (pip)
+# IndicTransToolkit: installed at runtime by the scripts (pip)
+tqdm==4.67.3
+psutil==5.9.5
