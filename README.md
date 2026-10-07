@@ -1,172 +1,152 @@
 # Business Entity Resolution — Amazon ML Challenge 2026
 
-Matching **1.73M businesses** against a **10M-record multilingual pool** (US, India, France) with
-multi-layer blocking, a LightGBM matcher and a fine-tuned multilingual cross-encoder.
+End-to-end pipeline that, for every Source-1 (S1) business in the test set, finds all matching Source-2/3
+(S2/S3) records, and writes the two submission files:
 
-**Final leaderboard F0.5: 0.966** · Held-out F0.5 (India + US): **0.9751**
+- `matching_results.tsv`: final matches, one row per test S1 entity (the leaderboard file)
+- `candidate_pairs.tsv`: the candidate set the final matcher scored
 
-> Team project built during the 3-day Amazon ML Challenge 2026 hackathon by a team of **4 members**.
+**Final leaderboard F0.5: 0.966.** Held-out F0.5 on India + US: 0.9751. Team project, 4 members.
 
----
-
-## Team
-
-| Member | Main contributions |
-|---|---|
-| Jyotiprakash | test-side pipeline, inference, submissions |
-| Siddarth | train-side pipeline, matcher training |
-| Vedaansh | blocking (test), cross-encoder |
-| Mahima | blocking (train), analyses, cross-encoder |
-
----
-
-## The problem
-
-For every business in Source 1 (S1), find **all** records describing the same business in Sources 2 and 3
-(S2/S3). Records are noisy: typos and swapped letters, reordered words, changed legal suffixes, blank or
-partial addresses, domain-style names, names written in **9 Indian scripts** (15% of S2), and "sibling"
-businesses that share a name and address but differ in legal form. The test set adds **France**, a
-country with no training data.
-
-**Metric:** macro-averaged F0.5 per S1 entity (precision weighted twice as much as recall).
-
----
-
-## Results
-
-| Version | What changed | Held-out F0.5 (India+US) | Leaderboard |
-|---|---|---|---|
-| v1 | 4-layer blocking + LightGBM matcher | 0.9172 | — |
-| v2 | legal-form + phonetic features, one-owner rule | 0.9432 | — |
-| v3 | Phase B + C blocking, translated names | 0.9644 | 0.9556 |
-| **v3 + cross-encoder** | **fine-tuned cross-encoder + stacker on unsure pairs** | **0.9751** | **0.966** |
-
-**Blocking recall** (share of true matches that reach the matcher, held-out):
-
-| | Layers L1–L4 | + L5–L7 | + L8 / L2t |
-|---|---|---|---|
-| India | 90.0% | 92.7% | **98.2%** |
-| US | 97.4% | 98.1% | **99.2%** |
-
-Held-out gains transferred to the leaderboard almost exactly (+1.09 held-out vs +1.04 leaderboard).
-
----
-
-## Pipeline
-
-```mermaid
-flowchart LR
-    A[S1 / S2 / S3 records] --> B[Cleaning + IndicTrans2 translation<br/>+ phonetic skeletons]
-    B --> C[Blocking: 9 layers<br/>~250-290 candidates per S1]
-    C --> D[LightGBM pre-filter<br/>top-30 / top-80 per S1]
-    D --> E[LightGBM matcher<br/>~62 features]
-    E --> F{unsure?<br/>0.02 ≤ p < 0.99}
-    F -- yes --> G[Multilingual cross-encoder<br/>+ LightGBM stacker]
-    F -- no --> H
-    G --> H[One-owner rule +<br/>per-country thresholds]
-    H --> I[matching_results.tsv]
+```
+data ─► cleaning + IndicTrans2 translation ─► blocking (L1–L8, L2t) ─► LightGBM pre-filter (top-N)
+     ─► LightGBM matcher v3 ─► cross-encoder on unsure pairs + LightGBM stacker
+     ─► one-owner rule + per-country thresholds ─► matching_results.tsv / candidate_pairs.tsv
 ```
 
-### Key ideas
+---
 
-- **Blocking designed from a miss analysis.** We analysed 94K missed true pairs. Half of India's misses were
-  Indian-script names; most others had partial evidence spread across name and address.
-- **L8: exact, weighted token search.** Typed tokens (name words and pairs, phonetic-skeleton words,
-  sorted-letter keys for swapped letters, address words, numbers, address word pairs), IDF-weighted and
-  restricted to rare tokens. Name and address are scored separately and combined, so a blank field hands its
-  weight to the fields that exist. This alone lifted India's blocking recall from 92.7% to 98.2%.
-- **Translation for non-Latin names.** IndicTrans2 made 96% of missed non-Latin names match their English
-  S1 name exactly, against 46% with rule-based transliteration.
-- **Sibling-aware matching.** Legal-form comparison (same / different / missing), including forms read from
-  native scripts, separates businesses like "X Ventures LLP" and "X Ventures Limited".
-- **Cross-encoder on unsure pairs only.** A fine-tuned multilingual MiniLM reads both raw records and
-  re-scores the ~5% of pairs the matcher is unsure about. A LightGBM stacker blends both scores with
-  per-entity context.
-- **One-owner rule.** No S2/S3 record belongs to more than one S1 (verified on 7.6M training matches), so
-  each record goes to its highest-scoring claimant.
-- **Honest evaluation.** Hash-bucket splits and 2-fold cross-fitting over entities for every tuning choice.
+## 1. Contents of `src/`
+
+Every file is a Jupyter notebook. Notebooks ending in **`_executed`** are the Kaggle notebooks exactly as run
+for the submission, with their outputs (recall reports, held-out scores, validator results). The others hold
+the same pipeline code for steps whose executed notebook wasn't kept; they're run the same way.
+
+| Step | Notebook | What it does |
+|---|---|---|
+| — | `00_eda/eda_executed.ipynb` | Data exploration: sizes, countries, noise types, scripts, match statistics |
+| 1a | `01_blocking/1a_blocking_L1_L4_test_executed.ipynb` | Blocking layers L1–L4 on **test** |
+| 1b | `01_blocking/1b_blocking_L1_L4_train_executed.ipynb` | Blocking layers L1–L4 on **train** (+ labels, recall report) |
+| 2a | `01_blocking/2a_phaseB_L5_L7_test_executed.ipynb` | Phase B blocking (L5–L7) on **test** |
+| 2b | `01_blocking/2b_phaseB_L5_L7_train.ipynb` | Phase B blocking on **train** (set `MODE = "train"`) |
+| 3 | `02_translation/3_translation_indictrans2.ipynb` | IndicTrans2 translation of Indian-script names (run with `MODE = "test"` and `"train"`) |
+| 4a | `01_blocking/4a_phaseC_L8_L2t_test_executed.ipynb` | Phase C blocking (L8 + L2t) on **test** |
+| 4b | `01_blocking/4b_phaseC_L8_L2t_train_executed.ipynb` | Phase C blocking on **train** (+ recall report) |
+| 5 | `03_matching/5_test_text_prep.ipynb` | Cleans all test names/addresses once (`prep_test/`) |
+| 6 | `03_matching/6_train_v3_and_heldout_executed.ipynb` | Trains pre-filter + matcher v3; held-out evaluation; saves `heldout_v3.parquet` |
+| 7 | `03_matching/7_predict_v3_export_apply_executed.ipynb` | Test inference with v3; exports unsure pairs; **final apply → submission files** |
+| 8 | `04_cross_encoder/8_cross_encoder_train_select_score.ipynb` | Cross-encoder: fine-tuning, held-out evaluation, stacker selection, scoring of the unsure test pairs |
+| — | `utils/cell0_copy_ckpt_prep.ipynb` | Copies step-1a/5 outputs into a new notebook's working folder |
+| — | `utils/validate_streaming.ipynb` | Memory-light submission validator (same rules as the official one) |
+| — | `utils/package_submission.ipynb` | Builds the submission zip and pins `requirements.txt` |
+| — | `experiments_not_in_final/` | v4 matcher, probes and analyses: documented, **not** used for the submission |
 
 ---
 
-## Repository structure
+## 2. Environment
 
-All notebooks are the Kaggle notebooks as actually run, with their outputs. They're listed here in
-pipeline order.
+- **Platform:** Kaggle notebooks. CPU sessions: 4 cores, 30 GB RAM. **GPU (T4)** for steps 1, 2, 3, 4 and 8.
+- **Python 3.12**; pinned versions in `requirements.txt`. Some notebooks `pip install` a missing package on
+  first run (rapidfuzz, indic_transliteration, IndicTransToolkit), so keep **Internet ON**.
+- **Disk:** `/kaggle/working` is limited to 20 GB. Each notebook cleans up its large intermediate files.
+- **Seeds:** fixed at 42 everywhere (splits, sampling, LightGBM, PyTorch).
 
-| Notebook | Pipeline step |
-|---|---|
-| [`eda-dataexploration.ipynb`](eda-dataexploration.ipynb) | Exploratory data analysis: sizes, noise types, scripts, match statistics |
-| [`pre-blocking.ipynb`](pre-blocking.ipynb) | Blocking layers L1–L4 on **test** (TF-IDF + SVD, multilingual embeddings, address keys, GPU top-K) and test text preparation _(please confirm)_ |
-| [`notebook2-train.ipynb`](notebook2-train.ipynb) | Phase B blocking (L5 address TF-IDF, L6 exact keys, L7 phonetic skeletons) on **train** + recall report |
-| [`test-blocking-b.ipynb`](test-blocking-b.ipynb) | Phase B blocking on **test** |
-| [`phasec-blocking-train.ipynb`](phasec-blocking-train.ipynb) | Phase C blocking (L8 exact weighted token search, L2t translated names) on **train** + recall report |
-| [`phasec-blocking-test.ipynb`](phasec-blocking-test.ipynb) | Phase C blocking on **test** |
-| [`model-train-on-v3.ipynb`](model-train-on-v3.ipynb) | Matcher v3: pre-filter + LightGBM matcher training, held-out evaluation, thresholds |
-| [`v3-test-predict.ipynb`](v3-test-predict.ipynb) | Test inference with v3, export of unsure pairs, final cross-encoder apply → **submission files** |
-| [`step2-v4.ipynb`](step2-v4.ipynb) | Experiment, **not in the final submission**: v4 matcher test inference ("which words differ" features) |
+**Data:** the competition dataset with `train/` and `test/` (`*_source1/2/3.tsv`,
+`train_ground_truth.tsv`) and `utils/validate_submission.py`. Each notebook's **first cell** sets the paths:
+`DATA_ROOT` (dataset folder), `INPUT_ROOT` (attached inputs, default `/kaggle/input`) and `WORK`
+(default `/kaggle/working`).
 
-**Steps run in notebooks not included here:** blocking layers L1–L4 on train, the IndicTrans2 translation
-pre-step (test and train), the held-out diagnostics, and the **cross-encoder notebook** (fine-tuning,
-held-out evaluation, stacker selection and scoring of the unsure test pairs). The cross-encoder's outputs
-(the stacker, its configuration and the test-pair scores) were used by the final apply step in
-`v3-test-predict.ipynb`.
+**Passing outputs between notebooks.** A notebook's outputs become the next notebook's inputs, either by
+attaching the earlier notebook's output (**Add Input → Notebooks**) or by uploading its files (zips are fine)
+as a Kaggle dataset. Every notebook finds its inputs by **file name** under `INPUT_ROOT` and unpacks zips
+automatically, so folder names don't matter.
 
----
-
-## How to reproduce
-
-**Environment:** Kaggle notebooks (4 CPU cores, 30 GB RAM, T4 GPU for blocking, translation and the
-cross-encoder), Python 3.12. Main libraries: PyTorch, Transformers, LightGBM, scikit-learn, pandas, NumPy,
-SciPy, rapidfuzz, pyarrow, indic-transliteration, IndicTransToolkit. Set the paths (`DATA_ROOT`,
-`INPUT_ROOT`, `WORK`) in each notebook's first cell. Notebooks with a `SMOKE` flag: run once with
-`SMOKE = True` (quick check), then `SMOKE = False`. All seeds are fixed at 42.
-
-**Data:** the competition data isn't included in this repository.
-
-**Order:**
-1. **Blocking:** L1–L4 (`pre-blocking` on test) → Phase B (`test-blocking-b`, `notebook2-train`) →
-   translation → Phase C (`phasec-blocking-test`, `phasec-blocking-train`)
-2. **Matcher:** `model-train-on-v3` → `v3-test-predict` (test scores)
-3. **Cross-encoder:** fine-tune and evaluate the cross-encoder, select the stacker (notebook not included)
-   → export unsure test pairs (in `v3-test-predict`) → score them with the cross-encoder → final apply
-   (in `v3-test-predict`) → `matching_results.tsv`, `candidate_pairs.tsv`
-
-**Total runtime:** about 12–14 hours across Kaggle sessions (blocking ~4 h, translation ~0.5 h, training
-~2 h, test inference ~2.5 h, cross-encoder ~2 h). We split independent steps across the team's 4 Kaggle
-accounts to run them in parallel.
-
-**Exact-reproduction note:** in the submitted run, India and US were scored in the v3 test inference with
-LightGBM prediction early stopping at margin 8, so the final apply clamps their cross-encoder band to
-(0.018, 0.982). Using margin 20 instead gives exact probabilities and reproduces the submission up to
-negligible differences.
+**Smoke runs.** Notebooks with a `SMOKE` flag: run once with `SMOKE = True` (a small slice: checks every
+stage, prints a runtime projection), then set `SMOKE = False` for the full run. Interrupted full runs resume
+per country.
 
 ---
 
-## Models
+## 3. Step-by-step reproduction
 
-All models are open-licensed, well under the 8B-parameter limit, and run locally. No external APIs or data.
+| Step | Run | Hardware | Inputs | Outputs | Time |
+|---|---|---|---|---|---|
+| 1a | `1a_blocking_L1_L4_test` (`MODE="test"`) | GPU | data | `ckpt_test/<country>/{pairs.npz, qids.npy, pids.npy, stats.json}` | ~2.5 h |
+| 1b | `1b_blocking_L1_L4_train` (`MODE="train"`) | GPU | data | `ckpt_train/...` (+ `label`), `train_queries.csv` | ~1.6 h |
+| 2a/2b | Phase B, `MODE="test"` / `"train"` | GPU | data, 1a / 1b | `ckpt_b_<mode>/<country>/pairs_b.npz` | ~1 h / ~45 min |
+| 3 | translation, `MODE="test"` and `"train"` | GPU, HF token | data | `translations_<mode>.parquet` | ~10 min each |
+| 4a/4b | Phase C, `MODE="test"` / `"train"` | GPU | data, 1a / 1b, 3 | `ckpt_c_<mode>/<country>/pairs_c.npz` | ~45 min / ~30 min |
+| 5 | `5_test_text_prep` | CPU | data, 1a | `prep_test/<country>/{q,p}.parquet` | ~10 min |
+| 6 | `6_train_v3_and_heldout` | CPU | data, 1b, 2b, 4b, 3 (train) | `stage2_models_v3/`, `heldout_v3.parquet` | ~1.5 h |
+| 7 (scoring) | `7_predict_v3_export_apply`: Step 2 v3 cells | CPU | 1a, 5, 2a, 4a, 3 (test), 6 | `stage2_v3_output/` (`_parts/<country>.npz`, `candidate_pairs.tsv`) | ~1.5–2.5 h |
+| 7 (export) | same notebook: export cell | CPU | step 7 + step 8's config | `ce_band_test.parquet` | ~3 min |
+| 8 | `8_cross_encoder_train_select_score` | GPU | data, 1b, 2b, 4b, 3 (train), 6, 7 (export) | `ce_model/` (model, `ce_config_v2.json`, `stacker.txt`), `ce_test.parquet` | ~2 h |
+| 7 (apply) | same notebook as 7: apply cell | CPU | step 7, step 8 outputs | **`stage2_v3ce_output/matching_results.tsv`, `candidate_pairs.tsv`** | ~15 min |
 
-| Model | Licence | Size | Used for |
+**Notes per step**
+
+1. **Blocking L1–L4:** country-partitioned; TF-IDF (char n-grams) → SVD → exact GPU top-K, plus multilingual
+   embeddings and exact address keys. The test run writes the union candidate list; the train run attaches
+   labels and prints blocking recall (India 90.0%, US 97.4%).
+2. **Phase B:** adds L5 (address-only TF-IDF), L6 (exact name/skeleton keys), L7 (phonetic-skeleton TF-IDF)
+   with the same `qids`/`pids` order as step 1, so pairs merge exactly.
+3. **Translation:** `ai4bharat/indictrans2-indic-en-dist-200M` is a **gated** Hugging Face model. Request
+   access on its model page, create a read token, and add it as the Kaggle secret **`HF_TOKEN`**. The notebook
+   includes two compatibility fixes for newer `transformers` releases (a stand-in for the removed
+   `transformers.onnx` module, and a `tie_weights` signature fix). It translates each distinct name once.
+4. **Phase C:** L8 (exact typed-token search, parallel on all CPU cores) and L2t (TF-IDF over translated
+   non-Latin records only, GPU). Train mode reports recall old → +B → +C (India 90.0% → 92.7% → 98.2%).
+5. **Test text prep:** cleans 11.7M test records once and benchmarks the matching speed.
+6. **Matcher v3:** streams ~190M train pairs in chunks. Pre-filter → keep-N per country (India 80, US 30)
+   → string features on translated names → LightGBM matcher → per-country thresholds on held-out (hash
+   buckets 0–499). Then the diagnostics cells regenerate the held-out predictions and save
+   `heldout_v3.parquet` for the cross-encoder.
+7. **Test inference:** scores every test S1 entity country by country, with checkpoints in `_parts/`. If run in
+   a new notebook, run `utils/cell0_copy_ckpt_prep` first to place `ckpt_test/` and `prep_test/` in the
+   working folder.
+8. **Cross-encoder:** fine-tunes `paraphrase-multilingual-MiniLM-L12-v2` as a pair classifier
+   (CE-1), compares a logistic blend with a LightGBM stacker over three bands on held-out data (CE-1b), saves
+   the chosen configuration (band (0.02, 0.99), stacker), then scores the exported unsure test pairs (CE-2).
+   The last cells (CE-1c) are the v4 experiment and aren't needed for the submission.
+9. **Final apply** (in step 7's notebook): replaces the matcher score of each unsure pair with the stacker
+   score, then applies the strict one-owner rule (exactly one S1 per S2/S3 record; ties broken
+   deterministically) and the per-country thresholds (India 0.73, US 0.67; France, unseen in training,
+   0.69). Finally it runs the official validator.
+
+---
+
+## 4. Exact-reproduction notes
+
+- **Prediction early stopping.** In the submitted run, India and US were scored in step 7 with LightGBM
+  prediction early stopping at `pred_early_stop_margin=8.0`, while France was scored without early stopping.
+  Margin 8 makes probabilities exact only inside (0.018, 0.982), so the export and apply cells clamp the
+  India/US band to that range (`MARGIN8_COUNTRIES = ["India", "US"]`). The code as shipped uses margin 20
+  (exact probabilities for practical purposes). To reproduce the submission exactly, use margin 8 for India
+  and US; otherwise the result differs negligibly.
+- **Band choice.** Step 8 first selected band (0.005, 0.999); the final configuration was re-saved with band
+  (0.02, 0.99), stacker (held-out 0.9751 vs 0.9754, within noise), to match the India/US clamp.
+- **Runtime:** about 12–14 hours in total. Independent steps were run in parallel on four Kaggle accounts.
+
+---
+
+## 5. Models and licences
+
+All run locally; no external APIs or data. All are under 8B parameters.
+
+| Model / library | Licence | Size | Use |
 |---|---|---|---|
-| `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Apache-2.0 | 118M | blocking embeddings (L3); fine-tuned as the cross-encoder |
-| `ai4bharat/indictrans2-indic-en-dist-200M` | MIT | 200M | Indian-script → English name translation |
+| `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Apache-2.0 | 118M | L3 embeddings; fine-tuned cross-encoder |
+| `ai4bharat/indictrans2-indic-en-dist-200M` | MIT | 200M | Indian-script → English translation |
 | LightGBM | MIT | — | pre-filter, matcher, stacker |
+| rapidfuzz, scikit-learn, indic_transliteration | MIT / BSD / MIT | — | string similarity, TF-IDF/SVD, transliteration |
 
 ---
 
-## What we learned
+## 6. Troubleshooting
 
-- **Blocking sets the ceiling.** No matcher can recover a pair blocking missed; the biggest jumps came
-  from studying what blocking missed.
-- **Compressed vectors blur rare words.** Exact sparse search over *rare* tokens was both faster and more
-  accurate than we expected.
-- **Measure before building.** Small probes (translation, L8, diagnostics) killed several ideas before they
-  cost hours, and confirmed the ones that worked.
-- **Zero-shot countries stay hard.** France (no labels) remained the largest gap, at an estimated ~0.91 F0.5.
-
----
-
-## Acknowledgements
-
-Amazon ML Challenge 2026 organisers, AI4Bharat (IndicTrans2), and the authors of Sentence-Transformers,
-LightGBM and rapidfuzz.
+- **Out of memory in step 6:** lower `MATCHER_NEG_RATE` (Cell 1). Prepared texts are cached, so a rerun is
+  cheap.
+- **`transformers.onnx` not found** or **`tie_weights() got an unexpected keyword argument`** in step 3: both
+  fixes are already in the notebook. Run all its cells in order.
+- **"not found" errors:** the named input isn't attached. Check under **Add Input**.
+- **Validator killed (out of memory):** use `utils/validate_streaming.ipynb`.
